@@ -1,9 +1,9 @@
-"""Camera worker thread with frame buffering and optional head tracking."""
+"""Camera worker thread with frame buffering and optional head/hand tracking."""
 
 import time
 import logging
 import threading
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -20,10 +20,16 @@ logger = logging.getLogger(__name__)
 class CameraWorker:
     """Thread-safe camera worker with frame buffering and optional head tracking."""
 
-    def __init__(self, reachy_mini: ReachyMini, head_tracker: HeadTracker | None = None) -> None:
+    def __init__(
+        self,
+        reachy_mini: ReachyMini,
+        head_tracker: HeadTracker | None = None,
+        hand_tracker: Any | None = None,
+    ) -> None:
         """Initialize."""
         self.reachy_mini = reachy_mini
         self.head_tracker = head_tracker
+        self.hand_tracker = hand_tracker
 
         self.latest_frame: NDArray[np.uint8] | None = None
         self.frame_lock = threading.Lock()
@@ -49,6 +55,12 @@ class CameraWorker:
 
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
+        # Hand tracking state
+        self.hand_tracking_offsets: List[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.hand_tracking_lock = threading.Lock()
+        self.last_hand_detected_time: float | None = None
+        self._frame_counter = 0
+
     def get_latest_frame(self) -> NDArray[np.uint8] | None:
         """Get the latest frame (thread-safe)."""
         with self.frame_lock:
@@ -62,6 +74,14 @@ class CameraWorker:
         """Get current face tracking offsets (thread-safe)."""
         with self.face_tracking_lock:
             offsets = self.face_tracking_offsets
+            return (offsets[0], offsets[1], offsets[2], offsets[3], offsets[4], offsets[5])
+
+    def get_hand_tracking_offsets(
+        self,
+    ) -> Tuple[float, float, float, float, float, float]:
+        """Get current hand tracking offsets (thread-safe)."""
+        with self.hand_tracking_lock:
+            offsets = self.hand_tracking_offsets
             return (offsets[0], offsets[1], offsets[2], offsets[3], offsets[4], offsets[5])
 
     def set_head_tracking_enabled(self, enabled: bool) -> None:
@@ -84,6 +104,9 @@ class CameraWorker:
         head_tracker_close = getattr(self.head_tracker, "close", None)
         if callable(head_tracker_close):
             head_tracker_close()
+        hand_tracker_close = getattr(self.hand_tracker, "close", None)
+        if callable(hand_tracker_close):
+            hand_tracker_close()
 
         logger.debug("Camera worker stopped")
 
@@ -100,6 +123,8 @@ class CameraWorker:
                 frame = self.reachy_mini.media.get_frame()
 
                 if frame is not None:
+                    h, w, _ = frame.shape
+
                     # Keep the latest frame available for tools and UI consumers
                     with self.frame_lock:
                         self.latest_frame = frame
@@ -112,6 +137,8 @@ class CameraWorker:
 
                     self.previous_head_tracking_state = self.is_head_tracking_enabled
 
+                    eye_center = None
+
                     if self.is_head_tracking_enabled and self.head_tracker is not None:
                         eye_center, _ = self.head_tracker.get_head_position(frame)
 
@@ -120,7 +147,6 @@ class CameraWorker:
                             self.interpolation_start_time = None
 
                             # The tracker returns normalized coordinates in [-1, 1]
-                            h, w, _ = frame.shape
                             eye_center_norm = (eye_center + 1) / 2
                             eye_center_pixels = [
                                 eye_center_norm[0] * w,
@@ -153,6 +179,52 @@ class CameraWorker:
 
                         elif self.last_face_detected_time is None or self.last_face_detected_time == current_time:
                             pass
+
+                    # --- Hand tracking (every 3rd frame to save CPU) ---
+                    if self.hand_tracker is not None:
+                        self._frame_counter += 1
+                        if self._frame_counter % 3 == 0:
+                            try:
+                                # Build face exclusion bbox from current eye_center
+                                face_bbox = None
+                                if eye_center is not None:
+                                    ec_px = ((eye_center + 1) / 2) * np.array([w, h])
+                                    face_size = min(w, h) // 3
+                                    face_bbox = (
+                                        max(0, int(ec_px[0] - face_size / 2)),
+                                        max(0, int(ec_px[1] - face_size * 0.6)),
+                                        face_size,
+                                        face_size,
+                                    )
+
+                                hand_result = self.hand_tracker.get_hand_position(frame, face_bbox)
+                                if hand_result[0] is not None:
+                                    hand_center = hand_result[0]
+                                    self.last_hand_detected_time = current_time
+
+                                    hand_center_norm = (hand_center + 1) / 2
+                                    hand_pixels = [
+                                        hand_center_norm[0] * w,
+                                        hand_center_norm[1] * h,
+                                    ]
+
+                                    hand_pose = self.reachy_mini.look_at_image(
+                                        hand_pixels[0],
+                                        hand_pixels[1],
+                                        duration=0.0,
+                                        perform_movement=False,
+                                    )
+
+                                    hand_trans = hand_pose[:3, 3] * 0.3
+                                    hand_rot = R.from_matrix(hand_pose[:3, :3]).as_euler("xyz", degrees=False) * 0.3
+
+                                    with self.hand_tracking_lock:
+                                        self.hand_tracking_offsets = [
+                                            hand_trans[0], hand_trans[1], hand_trans[2],
+                                            hand_rot[0], hand_rot[1], hand_rot[2],
+                                        ]
+                            except Exception as hand_err:
+                                logger.debug(f"Hand tracking error: {hand_err}")
 
                     if self.last_face_detected_time is not None:
                         time_since_face_lost = current_time - self.last_face_detected_time

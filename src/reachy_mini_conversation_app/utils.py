@@ -24,14 +24,22 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     parser = argparse.ArgumentParser("Reachy Mini Conversation App")
     parser.add_argument(
         "--head-tracker",
-        choices=["yolo", "mediapipe"],
+        choices=["yolo", "mediapipe", "opencv"],
         default=None,
         help=(
             "Optional head-tracking backend: yolo uses a local face detector in a subprocess, "
-            "mediapipe uses reachy_mini_toolbox in process. Disabled by default."
+            "mediapipe uses reachy_mini_toolbox in process, "
+            "opencv uses OpenCV YuNet face detector (lightweight, works on Pi). "
+            "Disabled by default."
         ),
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")
+    parser.add_argument(
+        "--hand-tracking",
+        choices=["opencv"],
+        default=None,
+        help="Optional hand-tracking backend: opencv uses skin-color segmentation. Disabled by default.",
+    )
     parser.add_argument(
         "--local-vision",
         default=False,
@@ -51,7 +59,7 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     tool_spaces_subparsers = tool_spaces_parser.add_subparsers(dest="tool_spaces_command", required=True)
 
     add_parser = tool_spaces_subparsers.add_parser("add", help="Install one public Space tool source by slug")
-    add_parser.add_argument("space_slug", help="Public Hugging Face Space slug in the form owner/space-name")
+    add_parser.add_argument("space_slug", help="Public HuggingFace Space slug in the form owner/space-name")
     add_parser.add_argument(
         "--install-only",
         action="store_true",
@@ -67,7 +75,7 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     )
 
     remove_parser = tool_spaces_subparsers.add_parser("remove", help="Remove one installed Space tool source")
-    remove_parser.add_argument("space_slug", help="Installed Hugging Face Space slug in the form owner/space-name")
+    remove_parser.add_argument("space_slug", help="Installed HuggingFace Space slug in the form owner/space-name")
 
     tool_spaces_subparsers.add_parser("list", help="List installed Space tool sources")
     return parser.parse_known_args()
@@ -80,6 +88,7 @@ def initialize_camera_and_vision(
     """Initialize camera capture, optional head tracking, and optional local vision."""
     camera_worker: Optional[CameraWorker] = None
     head_tracker: HeadTracker | None = None
+    hand_tracker = None
     vision_processor: Optional[VisionProcessor] = None
 
     if not args.no_camera:
@@ -92,19 +101,37 @@ def initialize_camera_and_vision(
 
                     head_tracker = YoloHeadTrackerProcess()
                     logging.getLogger(__name__).info("Using yolo head tracker subprocess")
-                else:
+                elif args.head_tracker == "mediapipe":
                     from reachy_mini_conversation_app.vision.head_tracking.mediapipe import (
                         MediapipeHeadTracker,
                     )
 
                     head_tracker = MediapipeHeadTracker()
                     logging.getLogger(__name__).info("Using mediapipe head tracker in process")
+                elif args.head_tracker == "opencv":
+                    from reachy_mini_conversation_app.vision.head_tracking.opencv_tracker import (
+                        OpenCVFaceTracker,
+                    )
+
+                    head_tracker = OpenCVFaceTracker()
+                    logging.getLogger(__name__).info("Using OpenCV YuNet face tracker")
             except Exception as e:
                 raise CameraVisionInitializationError(
                     f"Failed to initialize {args.head_tracker} head tracker: {e}",
                 ) from e
 
-        camera_worker = CameraWorker(current_robot, head_tracker)
+        # Initialize hand tracker if requested
+        if getattr(args, 'hand_tracking', None) == "opencv":
+            try:
+                from reachy_mini_conversation_app.vision.hand_tracking.opencv_hand_tracker import (
+                    OpenCVHandTracker,
+                )
+                hand_tracker = OpenCVHandTracker()
+                logging.getLogger(__name__).info("Using OpenCV skin-color hand tracker")
+            except Exception as e:
+                logging.getLogger(__name__).warning("Failed to initialize hand tracker: %s", e)
+
+        camera_worker = CameraWorker(current_robot, head_tracker, hand_tracker)
 
         if args.local_vision:
             result = subprocess.run(

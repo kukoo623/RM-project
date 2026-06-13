@@ -671,13 +671,31 @@ class MovementManager:
         stats.reset()
 
     def _update_face_tracking(self, current_time: float) -> None:
-        """Get face tracking offsets from camera worker thread."""
+        """Get face/hand tracking offsets from camera worker and blend them."""
         if self.camera_worker is not None:
-            # Get face tracking offsets from camera worker thread
-            offsets = self.camera_worker.get_face_tracking_offsets()
-            self.state.face_tracking_offsets = offsets
+            # Get face tracking offsets
+            face = self.camera_worker.get_face_tracking_offsets()
+
+            # Get hand tracking offsets (may not exist if hand tracker disabled)
+            hand_getter = getattr(self.camera_worker, 'get_hand_tracking_offsets', None)
+            if callable(hand_getter):
+                hand = hand_getter()
+            else:
+                hand = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+            # Blend: face 70% + hand 30%
+            # Only blend hand when hand offsets are non-zero (hand detected)
+            hand_active = any(abs(v) > 0.001 for v in hand)
+            if hand_active:
+                face_weight, hand_weight = 0.7, 0.3
+                blended = tuple(
+                    f * face_weight + h * hand_weight
+                    for f, h in zip(face, hand)
+                )
+                self.state.face_tracking_offsets = blended
+            else:
+                self.state.face_tracking_offsets = face
         else:
-            # No camera worker, use neutral offsets
             self.state.face_tracking_offsets = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     def start(self) -> None:
