@@ -85,9 +85,21 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
     "Zephyr",
 ]
 
+# Voices supported by the DashScope Qwen-Omni-Realtime API
+DASHSCOPE_AVAILABLE_VOICES: list[str] = [
+    "Tina",
+    "Ethan",
+    "Cherry",
+    "Chelsie",
+    "Serena",
+    "Dylan",
+    "Aiden",
+]
+
 OPENAI_BACKEND = "openai"
 GEMINI_BACKEND = "gemini"
 HF_BACKEND = "huggingface"
+DASHSCOPE_BACKEND = "dashscope"
 DEFAULT_BACKEND_PROVIDER = HF_BACKEND
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
@@ -117,16 +129,19 @@ DEFAULT_MODEL_NAME_BY_BACKEND = {
     OPENAI_BACKEND: "gpt-realtime-2",
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
+    DASHSCOPE_BACKEND: "qwen3.5-omni-flash-realtime",
 }
 BACKEND_LABEL_BY_PROVIDER = {
     OPENAI_BACKEND: "OpenAI Realtime",
     GEMINI_BACKEND: "Gemini Live",
     HF_BACKEND: "Hugging Face",
+    DASHSCOPE_BACKEND: "DashScope (Qwen)",
 }
 DEFAULT_VOICE_BY_BACKEND = {
     OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
+    DASHSCOPE_BACKEND: "Tina",
 }
 
 logger = logging.getLogger(__name__)
@@ -136,6 +151,12 @@ def _is_gemini_model_name(model_name: str | None) -> bool:
     """Return True when the provided model name targets Gemini."""
     candidate = (model_name or "").strip().lower()
     return candidate.startswith("gemini")
+
+
+def _is_dashscope_model_name(model_name: str | None) -> bool:
+    """Return True when the provided model name targets DashScope Qwen-Omni."""
+    candidate = (model_name or "").strip().lower()
+    return candidate.startswith("qwen") and ("omni" in candidate or "realtime" in candidate)
 
 
 def _normalize_backend_provider(
@@ -149,7 +170,12 @@ def _normalize_backend_provider(
     if candidate:
         expected = ", ".join(sorted(DEFAULT_MODEL_NAME_BY_BACKEND))
         raise ValueError(f"Invalid BACKEND_PROVIDER={backend_provider!r}. Expected one of: {expected}.")
-    return GEMINI_BACKEND if _is_gemini_model_name(model_name) else DEFAULT_BACKEND_PROVIDER
+    # Auto-detect from model name
+    if _is_gemini_model_name(model_name):
+        return GEMINI_BACKEND
+    if _is_dashscope_model_name(model_name):
+        return DASHSCOPE_BACKEND
+    return DEFAULT_BACKEND_PROVIDER
 
 
 def _resolve_model_name(
@@ -165,7 +191,9 @@ def _resolve_model_name(
     if candidate:
         if normalized_backend == GEMINI_BACKEND and _is_gemini_model_name(candidate):
             return candidate
-        if normalized_backend != GEMINI_BACKEND and not _is_gemini_model_name(candidate):
+        if normalized_backend == DASHSCOPE_BACKEND and _is_dashscope_model_name(candidate):
+            return candidate
+        if normalized_backend not in (GEMINI_BACKEND, DASHSCOPE_BACKEND) and not _is_gemini_model_name(candidate) and not _is_dashscope_model_name(candidate):
             return candidate
         logger.warning(
             "MODEL_NAME=%r does not match BACKEND_PROVIDER=%r, using default %r",
@@ -357,6 +385,7 @@ class Config:
     # Required (one of these depending on BACKEND_PROVIDER)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # The key is downloaded in console.py if needed
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 
     # Optional
     BACKEND_PROVIDER = _normalize_backend_provider(
@@ -463,6 +492,7 @@ def refresh_runtime_config_from_env() -> None:
     """Refresh mutable runtime config fields from the current environment."""
     config.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     config.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    config.DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
     config.BACKEND_PROVIDER = _normalize_backend_provider(
         os.getenv("BACKEND_PROVIDER"),
         os.getenv("MODEL_NAME"),
@@ -508,6 +538,8 @@ def get_available_voices_for_backend(backend: str | None = None) -> list[str]:
         return list(GEMINI_AVAILABLE_VOICES)
     if normalized_backend == HF_BACKEND:
         return list(HF_AVAILABLE_VOICES)
+    if normalized_backend == DASHSCOPE_BACKEND:
+        return list(DASHSCOPE_AVAILABLE_VOICES)
     return list(AVAILABLE_VOICES)
 
 
@@ -555,6 +587,11 @@ def has_hf_realtime_target() -> bool:
 def is_gemini_model() -> bool:
     """Return True if the configured MODEL_NAME is a Gemini Live model."""
     return get_backend_choice() == GEMINI_BACKEND
+
+
+def is_dashscope_model() -> bool:
+    """Return True if the configured backend is DashScope."""
+    return get_backend_choice() == DASHSCOPE_BACKEND
 
 
 def set_custom_profile(profile: str | None) -> None:

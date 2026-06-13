@@ -27,6 +27,7 @@ from reachy_mini_conversation_app.config import (
     GEMINI_BACKEND,
     LOCKED_PROFILE,
     OPENAI_BACKEND,
+    DASHSCOPE_BACKEND,
     HF_REALTIME_WS_URL_ENV,
     HF_LOCAL_CONNECTION_MODE,
     HF_DEPLOYED_CONNECTION_MODE,
@@ -247,6 +248,8 @@ class LocalStream:
             return self._has_key(config.GEMINI_API_KEY)
         if backend == HF_BACKEND:
             return has_hf_realtime_target()
+        if backend == DASHSCOPE_BACKEND:
+            return self._has_key(config.DASHSCOPE_API_KEY)
         return self._has_key(config.OPENAI_API_KEY)
 
     @staticmethod
@@ -256,6 +259,8 @@ class LocalStream:
             return "GEMINI_API_KEY"
         if backend == HF_BACKEND:
             return HF_REALTIME_WS_URL_ENV
+        if backend == DASHSCOPE_BACKEND:
+            return "DASHSCOPE_API_KEY"
         return "OPENAI_API_KEY"
 
     def _persist_env_value(self, env_name: str, value: str) -> None:
@@ -771,6 +776,19 @@ class LocalStream:
         self._robot.media.start_playing()
         time.sleep(1)  # give some time to the pipelines to start
         apply_audio_startup_config(self._robot, logger=logger)
+
+        # Ensure speaker volume is set (headless mode needs explicit volume)
+        try:
+            import httpx
+            host = getattr(getattr(self._robot, "client", None), "host", "localhost")
+            port = getattr(getattr(self._robot, "client", None), "port", 8000)
+            cur = httpx.get(f"http://{host}:{port}/api/volume/current", timeout=3).json()
+            logger.info(f"Current speaker volume: {cur.get('volume', '?')}")
+            if cur.get("volume", 0) < 50:
+                httpx.post(f"http://{host}:{port}/api/volume/set", json={"volume": 80}, timeout=3)
+                logger.info("Set speaker volume to 80")
+        except Exception as exc:
+            logger.warning(f"Could not check/set speaker volume: {exc}")
 
         async def runner() -> None:
             # Capture loop for cross-thread personality actions

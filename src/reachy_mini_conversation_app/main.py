@@ -61,9 +61,11 @@ def run(
         HF_BACKEND,
         GEMINI_BACKEND,
         OPENAI_BACKEND,
+        DASHSCOPE_BACKEND,
         HF_LOCAL_CONNECTION_MODE,
         config,
         is_gemini_model,
+        is_dashscope_model,
         get_backend_label,
         get_hf_connection_selection,
         refresh_runtime_config_from_env,
@@ -191,6 +193,22 @@ def run(
                 instance_path=instance_path,
                 startup_voice=startup_voice,
             )
+
+        if is_dashscope_model():
+            from reachy_mini_conversation_app.dashscope_realtime import DashScopeRealtimeHandler
+
+            logger.info(
+                "Using %s via DashScopeRealtimeHandler (model=%s)",
+                get_backend_label(config.BACKEND_PROVIDER),
+                config.MODEL_NAME,
+            )
+            return DashScopeRealtimeHandler(
+                deps,
+                gradio_mode=args.gradio,
+                instance_path=instance_path,
+                startup_voice=startup_voice,
+            )
+
         if config.BACKEND_PROVIDER == HF_BACKEND:
             from reachy_mini_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
 
@@ -236,14 +254,22 @@ def run(
         personality_ui.create_components()
         additional_inputs: list[Any] = [chatbot, *personality_ui.additional_inputs_ordered()]
 
-        if config.BACKEND_PROVIDER in {OPENAI_BACKEND, GEMINI_BACKEND}:
+        if config.BACKEND_PROVIDER in {OPENAI_BACKEND, GEMINI_BACKEND, DASHSCOPE_BACKEND}:
             uses_gemini_backend = is_gemini_model()
+            uses_dashscope_backend = is_dashscope_model()
+            if uses_dashscope_backend:
+                key_label = "DASHSCOPE_API_KEY"
+                key_env = os.getenv("DASHSCOPE_API_KEY")
+            elif uses_gemini_backend:
+                key_label = "GEMINI_API_KEY"
+                key_env = os.getenv("GEMINI_API_KEY")
+            else:
+                key_label = "OPENAI API Key"
+                key_env = os.getenv("OPENAI_API_KEY")
             api_key_textbox = gr.Textbox(
-                label="GEMINI_API_KEY" if uses_gemini_backend else "OPENAI API Key",
+                label=key_label,
                 type="password",
-                value=(os.getenv("GEMINI_API_KEY") if uses_gemini_backend else os.getenv("OPENAI_API_KEY"))
-                if not get_space()
-                else "",
+                value=key_env if not get_space() else "",
             )
             additional_inputs.insert(1, api_key_textbox)
 
@@ -325,7 +351,7 @@ def run(
         threading.Thread(target=poll_stop_event, daemon=True).start()
 
     try:
-        stream_manager.launch()
+        stream_manager.launch(**({"share": True} if args.gradio else {}))
     except KeyboardInterrupt:
         logger.info("Keyboard interruption in main thread... closing server.")
     finally:
