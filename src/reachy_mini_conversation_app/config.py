@@ -63,6 +63,7 @@ OPENAI_DEFAULT_VOICE = "cedar"
 # Qwen3-TTS CustomVoice speaker catalog from the deployed Hugging Face backend.
 HF_AVAILABLE_VOICES: list[str] = [
     "Aiden",
+    "Kiki",
     "Ryan",
     "Dylan",
     "Eric",
@@ -87,13 +88,14 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
 
 # Voices supported by the DashScope Qwen-Omni-Realtime API
 DASHSCOPE_AVAILABLE_VOICES: list[str] = [
-    "Tina",
+    "Kiki",
     "Ethan",
     "Cherry",
     "Chelsie",
     "Serena",
     "Dylan",
     "Aiden",
+    "Kiki",
 ]
 
 OPENAI_BACKEND = "openai"
@@ -141,7 +143,7 @@ DEFAULT_VOICE_BY_BACKEND = {
     OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
-    DASHSCOPE_BACKEND: "Tina",
+    DASHSCOPE_BACKEND: "Kiki",
 }
 
 logger = logging.getLogger(__name__)

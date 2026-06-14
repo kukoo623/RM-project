@@ -52,16 +52,17 @@ logger = logging.getLogger(__name__)
 DASHSCOPE_BACKEND = "dashscope"
 
 DASHSCOPE_AVAILABLE_VOICES: list[str] = [
-    "Tina",
+    "Kiki",
     "Ethan",
     "Cherry",
     "Chelsie",
     "Serena",
     "Dylan",
     "Aiden",
+    "Kiki",
 ]
 
-DASHSCOPE_DEFAULT_VOICE = "Tina"
+DASHSCOPE_DEFAULT_VOICE = "Kiki"
 
 # ── Pricing (CNY per million tokens) ─────────────────────────────
 AUDIO_IN_PER_1M = 27.0
@@ -267,7 +268,7 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     format=AudioPCM(type="audio/pcm", rate=16000),
-                    transcription={"model": "qwen3-asr-flash-realtime", "language": "zh"},
+                    transcription={"model": "qwen3-asr-flash-realtime"},
                     turn_detection=None,  # Local VAD handles turn detection
                 ),
                 output=RealtimeAudioConfigOutputParam(
@@ -426,6 +427,7 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
                 # Convert the OpenAI-style config dict to the DashScope wire format
                 session_dict = self._translate_session_config(session_config)
                 logger.info("Session config turn_detection=%s", session_dict.get("turn_detection", "NOT SET"))
+                logger.info("Session config being sent: %s", json.dumps(session_dict, indent=2, default=str))
                 await conn.session.update(session=session_dict)
                 logger.info(
                     "DashScope session initialized (model=%s, voice=%s)",
@@ -477,37 +479,58 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
     @staticmethod
     def _translate_session_config(session: dict[str, Any]) -> dict[str, Any]:
         """Translate OpenAI-style session config to DashScope wire format.
-
-        The DashScope Realtime API is largely OpenAI-compatible, but some
-        fields need adjustment (e.g. audio format names, voice casing).
+        
+        DashScope expects a FLAT format with voice at top level:
+        {
+            "modalities": ["text", "audio"],
+            "voice": "Kiki",
+            "input_audio_format": "pcm",
+            "output_audio_format": "pcm",
+            "instructions": "...",
+            "turn_detection": {...}
+        }
         """
-        result = dict(session)
-
-        # Use server_vad with 1.5s silence for wake word mode
-        # Server will auto-detect speech end and return transcriptions
+        result: dict[str, Any] = {}
+        
+        # Extract voice from nested audio.output.voice and put at top level
+        audio = session.get("audio", {})
+        if isinstance(audio, dict):
+            out = audio.get("output", {})
+            if isinstance(out, dict):
+                voice = out.get("voice")
+                if voice and isinstance(voice, str):
+                    result["voice"] = voice[0].upper() + voice[1:]
+        
+        # Set modalities
+        result["modalities"] = ["text", "audio"]
+        
+        # Set audio formats
+        result["input_audio_format"] = "pcm"
+        result["output_audio_format"] = "pcm"
+        
+        # Copy instructions
+        instructions = session.get("instructions")
+        if instructions:
+            result["instructions"] = instructions
+        
+        # Use server_vad with 1.5s silence
         result["turn_detection"] = {
             "type": "server_vad",
             "silence_duration_ms": 1500,
         }
-
-        # DashScope expects plain format strings
-        audio = result.get("audio", {})
-        if isinstance(audio, dict):
-            inp = audio.get("input", {})
-            if isinstance(inp, dict) and "format" in inp:
-                fmt = inp["format"]
-                if isinstance(fmt, dict):
-                    inp["format"] = "pcm"
-            out = audio.get("output", {})
-            if isinstance(out, dict) and "format" in out:
-                fmt = out["format"]
-                if isinstance(fmt, dict):
-                    out["format"] = "pcm"
-
-        # Ensure voice is title-case (DashScope voices are PascalCase)
-        voice = result.get("audio", {}).get("output", {}).get("voice")
-        if voice and isinstance(voice, str):
-            result["audio"]["output"]["voice"] = voice[0].upper() + voice[1:]
+        
+        # Copy tools if present
+        tools = session.get("tools")
+        if tools:
+            result["tools"] = tools
+        
+        tool_choice = session.get("tool_choice")
+        if tool_choice:
+            result["tool_choice"] = tool_choice
+        
+        logger.info("DashScope FLAT config: %s", json.dumps(result, ensure_ascii=False, default=str))
+        
+        return result
 
         return result
 
@@ -662,10 +685,15 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
                 arguments = json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
             except json.JSONDecodeError:
                 arguments = {}
-            self.tool_manager.submit(
-                tool_name=name,
-                tool_id=call_id,
-                arguments=arguments,
+            from reachy_mini_conversation_app.tools.background_tool_manager import ToolCallRoutine
+            await self.tool_manager.start_tool(
+                call_id=call_id,
+                tool_call_routine=ToolCallRoutine(
+                    tool_name=name,
+                    args_json_str=json.dumps(arguments),
+                    deps=self.deps,
+                ),
+                is_idle_tool_call=self.is_idle_tool_call if hasattr(self, 'is_idle_tool_call') else False,
             )
 
         # ── Errors ──
@@ -677,9 +705,12 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
 
         # ── Session events (informational) ──
         elif etype in ("session.created", "session.updated"):
-            logger.debug("Session event: %s", etype)
+            logger.info("Session event: %s, data=%s", etype, json.dumps(event.__dict__ if hasattr(event, '__dict__') else str(event), default=str))
 
         # ── Rejection handling ──
         elif etype == "response.cancelled" or (etype == "error" and "active_response" in str(event)):
             self._last_response_rejected = True
             self._response_started_or_rejected_event.set()
+
+
+
