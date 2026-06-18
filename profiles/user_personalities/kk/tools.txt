@@ -8,3 +8,5 @@ head_tracking
 move_head
 remember
 forget
+
+web_search

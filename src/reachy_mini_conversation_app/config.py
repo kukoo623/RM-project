@@ -88,14 +88,16 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
 
 # Voices supported by the DashScope Qwen-Omni-Realtime API
 DASHSCOPE_AVAILABLE_VOICES: list[str] = [
-    "Kiki",
-    "Ethan",
-    "Cherry",
-    "Chelsie",
+    "Tina",
     "Serena",
+    "Momo",
+    "Mia",
+    "Katerina",
+    "Ethan",
     "Dylan",
     "Aiden",
     "Kiki",
+    "Rocky",
 ]
 
 OPENAI_BACKEND = "openai"
@@ -143,7 +145,7 @@ DEFAULT_VOICE_BY_BACKEND = {
     OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
-    DASHSCOPE_BACKEND: "Kiki",
+    DASHSCOPE_BACKEND: "Tina",
 }
 
 logger = logging.getLogger(__name__)

@@ -268,7 +268,7 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
             audio=RealtimeAudioConfigParam(
                 input=RealtimeAudioConfigInputParam(
                     format=AudioPCM(type="audio/pcm", rate=16000),
-                    transcription={"model": "qwen3-asr-flash-realtime"},
+                    transcription={"model": "qwen3-asr-flash-realtime", "language": "zh"},
                     turn_detection=None,  # Local VAD handles turn detection
                 ),
                 output=RealtimeAudioConfigOutputParam(
@@ -294,15 +294,15 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
     _lv_speech_frames: int = 0
     _lv_total_speech_frames: int = 0
     # At 16kHz with ~320-sample frames = ~50 frames/sec
-    _LV_SILENCE_FRAMES: int = 75    # 1.5 seconds of silence = speech ended
-    _LV_MIN_SPEECH: int = 30        # 0.6 seconds minimum = real speech
+    _LV_SILENCE_FRAMES: int = 40    # 0.8 seconds of silence = speech ended
+    _LV_MIN_SPEECH: int = 10        # 0.2 seconds minimum = real speech
     _LV_ENERGY_FLOOR: float = 0.08  # Initial floor, will adapt
     _lv_rms_log_interval: int = 0
     _lv_noise_floor: float = 0.02   # Adaptive noise floor estimate
     _lv_noise_alpha: float = 0.995  # EMA smoothing for noise floor (slow)
     _robot_speaking: bool = False   # True while robot audio is playing
     _post_speech_silence: int = 0   # Frames of silence after robot stops
-    _POST_SPEECH_GRACE: int = 25    # 0.5s grace period after robot stops
+    _POST_SPEECH_GRACE: int = 5    # 0.1s grace period after robot stops
     _wake_word_detected: bool = True  # Disabled wake word (always active) "Reachy" detected
     _WAKE_WORD: str = "Reachy"      # Wake word to listen for
 
@@ -381,26 +381,17 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
                     self._lv_silence_frames = 0
                     self._lv_speech_frames = 0
 
-                    if self._lv_total_speech_frames >= self._LV_MIN_SPEECH:
-                        if self._wake_word_detected:
-                            logger.info(
-                                "Local VAD: speech END (%.1fs) -> triggering response", dur
-                            )
-                            try:
-                                if self.connection:
-                                    await self.connection.input_audio_buffer.commit()
-                                    await self.connection.response.create()
-                            except Exception as exc:
-                                logger.warning("Local VAD: trigger failed: %s", exc)
-                        else:
-                            logger.info(
-                                "Local VAD: speech END (%.1fs) -> no wake word, ignoring", dur
-                            )
-                    else:
-                        logger.info(
-                            "Local VAD: speech END (%.1fs) -> too short, ignoring", dur
-                        )
+                    logger.info(
+                        "Local VAD: speech END (%.1fs) -> server VAD handles turn", dur
+                    )
                     self._lv_total_speech_frames = 0
+
+        # Apply software gain to boost mic signal for better ASR recognition
+        # Hardware mic gain is at max; this provides additional ~10dB boost
+        _sr_val, _audio_raw = frame
+        _amplified = _audio_raw.astype(np.float64) * 3.0
+        _amplified = np.clip(_amplified, -32768, 32767).astype(_audio_raw.dtype)
+        frame = (_sr_val, _amplified)
 
         # Forward audio to server for transcription
         await super().receive(frame)
@@ -513,10 +504,10 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
         if instructions:
             result["instructions"] = instructions
         
-        # Use server_vad with 1.5s silence
+        # Use server_vad with 0.7s silence
         result["turn_detection"] = {
             "type": "server_vad",
-            "silence_duration_ms": 1500,
+            "silence_duration_ms": 700,
         }
         
         # Copy tools if present
@@ -527,10 +518,14 @@ class DashScopeRealtimeHandler(BaseRealtimeHandler):
         tool_choice = session.get("tool_choice")
         if tool_choice:
             result["tool_choice"] = tool_choice
-        
+
+        # Include transcription config for ASR — language=zh enables Cantonese recognition
+        result["input_audio_transcription"] = {
+            "model": "qwen3-asr-flash-realtime",
+            "language": "zh",
+        }
+
         logger.info("DashScope FLAT config: %s", json.dumps(result, ensure_ascii=False, default=str))
-        
-        return result
 
         return result
 
